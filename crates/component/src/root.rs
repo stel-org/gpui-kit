@@ -24,10 +24,10 @@ pub(crate) fn init(cx: &mut App) {
 /// Determines who draws the outermost presentation around a component root.
 ///
 /// The default is intentionally component-owned so existing GPUI Kit
-/// applications retain their current client frame. Applications that already
-/// realize an OS/native shell may select [`ApplicationOwned`] before creating
-/// their roots; component services and theme defaults remain available in both
-/// modes.
+/// applications retain their current client frame and root surface.
+/// Applications that already realize an OS/native shell may select
+/// [`ApplicationOwned`] before creating their roots; component services plus
+/// font and foreground defaults remain available in both modes.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum RootPresentation {
     /// GPUI Kit adds its standard component window border around the root.
@@ -39,6 +39,10 @@ pub enum RootPresentation {
 
 impl RootPresentation {
     fn component_owns_outer_frame(self) -> bool {
+        matches!(self, Self::ComponentOwned)
+    }
+
+    fn component_owns_root_background(self) -> bool {
         matches!(self, Self::ComponentOwned)
     }
 }
@@ -486,12 +490,19 @@ impl gpui_base::RootPlugin for WindowState {
 
     fn style(&self, surface: &mut gpui::Stateful<gpui::Div>, _window: &mut Window, cx: &mut App) {
         use gpui::Refineable as _;
-        surface.style().refine(
-            &gpui::StyleRefinement::default()
-                .font_family(cx.theme().font_family.clone())
-                .bg(cx.theme().tokens.background)
-                .text_color(cx.theme().foreground),
-        );
+        let typography = gpui::StyleRefinement::default()
+            .font_family(cx.theme().font_family.clone())
+            .text_color(cx.theme().foreground);
+        surface.style().refine(&typography);
+
+        // An application-owned native shell is already responsible for its
+        // opaque surface. Keeping a second full-size component background here
+        // would make it escape that shell's rounded platform clipping.
+        if self.presentation.component_owns_root_background() {
+            surface
+                .style()
+                .refine(&gpui::StyleRefinement::default().bg(cx.theme().tokens.background));
+        }
     }
 
     fn decorate(
@@ -573,6 +584,7 @@ mod tests {
             state.read_with(cx, |state, _| {
                 assert_eq!(state.presentation, RootPresentation::ComponentOwned);
                 assert!(state.presentation.component_owns_outer_frame());
+                assert!(state.presentation.component_owns_root_background());
             });
         });
     }
@@ -598,6 +610,7 @@ mod tests {
             state.read_with(cx, |state, _| {
                 assert_eq!(state.presentation, RootPresentation::ApplicationOwned);
                 assert!(!state.presentation.component_owns_outer_frame());
+                assert!(!state.presentation.component_owns_root_background());
             });
         });
     }
