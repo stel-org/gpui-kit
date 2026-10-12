@@ -21,8 +21,54 @@ pub(crate) fn init(cx: &mut App) {
     gpui_base::Root::register_plugin::<WindowState>(cx, WindowState::new);
 }
 
+/// Determines who draws the outermost presentation around a component root.
+///
+/// The default is intentionally component-owned so existing GPUI Kit
+/// applications retain their current client frame. Applications that already
+/// realize an OS/native shell may select [`ApplicationOwned`] before creating
+/// their roots; component services and theme defaults remain available in both
+/// modes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RootPresentation {
+    /// GPUI Kit adds its standard component window border around the root.
+    #[default]
+    ComponentOwned,
+    /// The embedding application owns the outer window presentation.
+    ApplicationOwned,
+}
+
+impl RootPresentation {
+    fn component_owns_outer_frame(self) -> bool {
+        matches!(self, Self::ComponentOwned)
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct RootPresentationPolicy(RootPresentation);
+
+impl gpui::Global for RootPresentationPolicy {}
+
+/// Select the presentation owner for component roots created after this call.
+///
+/// The policy is captured by each [`WindowState`] when its root is created, so
+/// changing it later does not restyle existing windows.
+pub fn set_root_presentation(presentation: RootPresentation, cx: &mut App) {
+    if cx.has_global::<RootPresentationPolicy>() {
+        cx.global_mut::<RootPresentationPolicy>().0 = presentation;
+    } else {
+        cx.set_global(RootPresentationPolicy(presentation));
+    }
+}
+
+fn root_presentation(cx: &App) -> RootPresentation {
+    cx.try_global::<RootPresentationPolicy>()
+        .map(|policy| policy.0)
+        .unwrap_or_default()
+}
+
 /// Component-owned window state and presentation; Base owns the actual root.
 pub(crate) struct WindowState {
+    presentation: RootPresentation,
     pub(crate) active_sheet: Option<ActiveSheet>,
     pub(crate) active_dialogs: Vec<ActiveDialog>,
     pub(super) focused_input: Option<AnyInputState>,
@@ -72,6 +118,7 @@ impl ActiveDialog {
 impl WindowState {
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
+            presentation: root_presentation(cx),
             active_sheet: None,
             active_dialogs: Vec::new(),
             focused_input: None,
@@ -454,7 +501,11 @@ impl gpui_base::RootPlugin for WindowState {
         _window: &mut Window,
         _cx: &mut App,
     ) -> impl IntoElement {
-        window_border().child(surface)
+        if self.presentation.component_owns_outer_frame() {
+            window_border().child(surface).into_any_element()
+        } else {
+            surface
+        }
     }
 }
 
@@ -490,5 +541,64 @@ impl RenderOnce for WindowStateLayers {
             .children(WindowState::sheet_layer(root.clone(), window, cx))
             .children(WindowState::dialog_layer(&root, window, cx))
             .children(WindowState::notification_layer(&root, cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    struct Content;
+
+    impl Render for Content {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    #[gpui::test]
+    fn default_presentation_keeps_the_component_owned_frame(cx: &mut TestAppContext) {
+        cx.update(|cx| crate::init(cx));
+
+        let (root, _) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| Content);
+            gpui_base::Root::new(content, window, cx)
+        });
+
+        root.read_with(cx, |root, _| {
+            let state = root
+                .plugin::<WindowState>()
+                .expect("component services mount");
+            state.read_with(cx, |state, _| {
+                assert_eq!(state.presentation, RootPresentation::ComponentOwned);
+                assert!(state.presentation.component_owns_outer_frame());
+            });
+        });
+    }
+
+    #[gpui::test]
+    fn application_owned_presentation_keeps_component_services_without_a_frame(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            crate::init(cx);
+            set_root_presentation(RootPresentation::ApplicationOwned, cx);
+        });
+
+        let (root, _) = cx.add_window_view(|window, cx| {
+            let content = cx.new(|_| Content);
+            gpui_base::Root::new(content, window, cx)
+        });
+
+        root.read_with(cx, |root, _| {
+            let state = root
+                .plugin::<WindowState>()
+                .expect("component services mount");
+            state.read_with(cx, |state, _| {
+                assert_eq!(state.presentation, RootPresentation::ApplicationOwned);
+                assert!(!state.presentation.component_owns_outer_frame());
+            });
+        });
     }
 }
