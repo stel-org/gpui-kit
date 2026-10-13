@@ -39,6 +39,7 @@ impl From<Pixels> for ButtonRounded {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ButtonCustomVariant {
     color: Hsla,
+    exact_background: bool,
     foreground: Hsla,
     shadow: bool,
     hover: Hsla,
@@ -103,6 +104,7 @@ impl ButtonCustomVariant {
     pub fn new(cx: &App) -> Self {
         Self {
             color: cx.theme().transparent,
+            exact_background: false,
             foreground: cx.theme().foreground,
             hover: cx.theme().transparent,
             active: cx.theme().transparent,
@@ -113,6 +115,14 @@ impl ButtonCustomVariant {
     /// Set background color, default is transparent.
     pub fn color(mut self, color: Hsla) -> Self {
         self.color = color;
+        self
+    }
+
+    /// Preserve the supplied normal background exactly instead of applying
+    /// the legacy Custom translucency treatment. This is opt-in so existing
+    /// Custom button consumers retain their established appearance.
+    pub fn exact_background(mut self) -> Self {
+        self.exact_background = true;
         self
     }
 
@@ -982,6 +992,7 @@ impl ButtonVariant {
                 cx.theme().tokens.info_active.background.opacity(0.4)
             }
             (Self::Ghost | Self::Link | Self::Text, _) => cx.theme().transparent.into(),
+            (Self::Custom(colors), _) if colors.exact_background => colors.color.into(),
             (Self::Custom(colors), _) => colors.color.mix_oklab(cx.theme().transparent, 0.2).into(),
         }
     }
@@ -1000,6 +1011,7 @@ impl ButtonVariant {
             Self::Success => cx.theme().tokens.button_success.into(),
             Self::Info => cx.theme().tokens.button_info.into(),
             Self::Ghost | Self::Link | Self::Text => cx.theme().transparent.into(),
+            Self::Custom(colors) if colors.exact_background => colors.color.into(),
             Self::Custom(colors) => colors.color.mix_oklab(cx.theme().transparent, 0.2).into(),
         }
     }
@@ -1856,6 +1868,21 @@ mod tests {
                 ButtonVariant::Primary.active(false, cx).bg,
                 cx.theme().tokens.button_primary_active.into()
             );
+        });
+    }
+
+    #[gpui::test]
+    fn exact_custom_background_preserves_the_supplied_normal_color(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::init);
+        let window = cx.add_empty_window();
+        window.update(|_, cx| {
+            let color = cx.theme().primary;
+            let legacy = ButtonVariant::Custom(ButtonCustomVariant::new(cx).color(color));
+            let exact =
+                ButtonVariant::Custom(ButtonCustomVariant::new(cx).color(color).exact_background());
+
+            assert_ne!(legacy.normal(false, cx).bg, color.into());
+            assert_eq!(exact.normal(false, cx).bg, color.into());
         });
     }
 
